@@ -1,0 +1,34 @@
+data:
+  train_data_file: data/gene3D_new/swissprot_gene3D_by2022-05-25_train.pt
+  valid_data_file: data/gene3D_new/swissprot_gene3D_by2022-05-25_val.pt
+  test_data_file: data/gene3D_new/swissprot_gene3D_after_2022-05-25_filtered.pt
+  original_train_data_file: data/gene3D_new/swissprot_gene3D_by2022-05-25.pt
+  label_file: data/gene3D_new/gene3D_labels_by2022-05-25.json
+  label_name: gene3D
+  dataset_type: MultiLabelSplitDataset
+
+model:
+  model_type: MLPModelLayernorm
+  input_dim: 1280
+  num_layers: 4
+  hidden_dims: [5120, 5120, 5000]
+  out_dim: null
+  dropout: 0.5
+
+train:
+  seed: 0
+  batch_size: 10_000
+  num_epochs: 10_000
+  lr: 1.e-4
+  weight_decay: 0.0
+  patience: 20
+  loss: NCLoss
+  sup_criterion: CrossEntropyLoss
+  lambda1: 1.0
+  lambda2: 1.0
+  lambda_CE: 0.0
+  optimizer: Adam
+  start_NC_epoch: 0
+  nc1: NC1Loss_v2_cosine
+  nc2: NC2Loss
+  fixed_means: false

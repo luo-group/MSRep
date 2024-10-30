@@ -1,0 +1,6 @@
+model_dir: checkpoints/EC/train_EC_seed_0
+lookup_data: data/EC/swissprot_train_ec.pt
+test_data: data/EC/swissprot_test_ec.pt
+label_file: data/ec_new/ec_list_by2022-05-25.json
+topk: 1
+ont: ec
