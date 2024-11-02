@@ -9,9 +9,10 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 import numpy as np
 import random
+import time
 
-def worker(tmp_fasta_file, cache_dir):
-    os.system(f'esm-extract esm1b_t33_650M_UR50S {tmp_fasta_file} {cache_dir} --repr_layers 33 --include mean')
+def worker(tmp_fasta_file, cache_dir, device_id):
+    os.system(f'export CUDA_VISIBLE_DEVICES={device_id}; esm-extract esm1b_t33_650M_UR50S {tmp_fasta_file} {cache_dir} --repr_layers 33 --include mean')
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -25,6 +26,7 @@ def parse_args():
     return parser.parse_args()
 
 def main():
+    start_overall = time.time()
     args = parse_args()
 
     os.makedirs(args.cache_dir, exist_ok=True)
@@ -56,7 +58,7 @@ def main():
                 f.write(f'>{entry}\n{sequence}\n')
     print('Running ESM in parallel...')
     os.makedirs(args.cache_dir, exist_ok=True)
-    Parallel(n_jobs=n_jobs)(delayed(worker)(tmp_fasta_files[i], args.cache_dir) for i in range(n_jobs))
+    Parallel(n_jobs=n_jobs)(delayed(worker)(tmp_fasta_files[i], args.cache_dir, args.devices[i]) for i in range(n_jobs))
 
     entries = df['Entry'].tolist()
     if is_labeled:
@@ -75,6 +77,8 @@ def main():
     torch.save(data, args.output)
     for f in tmp_fasta_files:
         os.remove(f)
+    end_overall = time.time()
+    print(f'Time elapsed: {end_overall - start_overall:.2f} seconds')
     
 if __name__ == '__main__':
     main()
