@@ -55,6 +55,7 @@ def main():
                 sequence = uncached_sequences[index]
                 f.write(f'>{entry}\n{sequence}\n')
     print('Running ESM in parallel...')
+    os.makedirs(args.cache_dir, exist_ok=True)
     Parallel(n_jobs=n_jobs)(delayed(worker)(tmp_fasta_files[i], args.cache_dir) for i in range(n_jobs))
 
     entries = df['Entry'].tolist()

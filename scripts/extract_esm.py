@@ -38,6 +38,7 @@ def main():
         for entry, sequence in zip(uncached_entries, uncached_sequences):
             f.write(f'>{entry}\n{sequence}\n')
     print('Running ESM...')
+    os.makedirs(args.cache_dir, exist_ok=True)
     os.system(f'esm-extract esm1b_t33_650M_UR50S {tmp_fasta_file} {args.cache_dir} --repr_layers 33 --include mean')
 
     entries = df['Entry'].tolist()
