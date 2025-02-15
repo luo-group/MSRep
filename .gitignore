@@ -179,4 +179,4 @@ esm_embeddings/
 data_cleaned/
 checkpoints/
 *.zip
-
+.vscode/
