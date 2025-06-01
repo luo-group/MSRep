@@ -1,191 +1,195 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import CrossEntropyLoss
-import math
+
 
 def pairwise_cosine_distance(x, y):
-    '''
-    x: (N, D)
-    y: (M, D)
-    return: (N, M)
-    '''
-    # Normalize x and y to have unit norm
-    x_norm = x / (x.norm(dim=1, keepdim=True) + 1e-10)
-    y_norm = y / (y.norm(dim=1, keepdim=True) + 1e-10)
+    """
+    Args:
+        x: Tensor with shape (N, D).
+        y: Tensor with shape (M, D).
 
-    # Compute the cosine similarity
-    cosine_similarity = torch.mm(x_norm, y_norm.t())
+    Returns:
+        Tensor with shape (N, M), where each entry is 1 - cosine_similarity.
+    """
+    x = F.normalize(x, p=2, dim=1)
+    y = F.normalize(y, p=2, dim=1)
+    return 1 - torch.mm(x, y.t())
 
-    # Compute the cosine distance
-    cosine_distance = 1 - cosine_similarity
-    
-    return cosine_distance
 
-class NC1Loss_v2_cosine(nn.Module):
-    '''
-    Modified Center loss, 1 / n_k * ||h-miu|| / (||h|| * ||miu||), here n_k will be calculated from the entire training set insead of the mini-batch
-    '''
-    def __init__(self, num_classes=10, feat_dim=128, device='cuda:0', occurrence_list=None, fixed_means=False):
+class CountNormalizedCosineCompactnessLoss(nn.Module):
+    """
+    NC1 compactness loss using cosine distance to class means, normalized by n_k.
+    """
+    count_power = 1.0
+
+    def __init__(self, num_classes=10, feat_dim=128, device='cuda:0',
+                 occurrence_list=None, fixed_means=False):
         super().__init__()
+        if occurrence_list is None:
+            raise ValueError('occurrence_list is required for class-count normalization.')
+
         self.num_classes = num_classes
         self.feat_dim = feat_dim
-        self.device = device
         self.fixed_means = fixed_means
-        
-        if not fixed_means:
-            self.means = nn.Parameter(torch.randn(self.num_classes, self.feat_dim).to(self.device))
-        else:
+
+        means = torch.randn(num_classes, feat_dim, device=device)
+        if fixed_means:
             print('#####################Fixed means##################')
-            self.means = torch.randn(self.num_classes, self.feat_dim).to(self.device)
-        self.N = torch.tensor(occurrence_list).to(self.device)
-
-    def forward(self, x, labels):
-        """
-        Args:
-            x: feature matrix with shape (batch_size, feat_dim).
-            labels: ground truth labels with shape (batch_size).
-        """
-        batch_size = x.size(0)
-        distmat = pairwise_cosine_distance(x, self.means)
-        
-        classes = torch.arange(self.num_classes).long()
-        classes = classes.to(self.device)
-
-        labels = labels.unsqueeze(1).expand(batch_size, self.num_classes)
-
-        mask = labels.eq(classes.expand(batch_size, self.num_classes)) # one-hot
-        mask2 = self.N.unsqueeze(0).expand(batch_size, self.num_classes) > 0
-
-        dist = distmat * mask.float() * mask2.float()
-        D = torch.sum(dist, dim=0)
-        N = self.N + 1e-10 # torch.size(num_classes)
-
-        loss = (D/N).clamp(min=1e-12, max=1e+12).sum() / self.num_classes
-
-        return loss, self.means
-    
-class NC1Loss_v5_cosine(nn.Module):
-    '''
-    Modified Center loss, 1 / n_k^0.5 * ||h-miu|| / (||h|| * ||miu||), here n_k will be calculated from the entire training set insead of the mini-batch
-    '''
-    def __init__(self, num_classes=10, feat_dim=128, device='cuda:0', occurrence_list=None, fixed_means=False):
-        super().__init__()
-        print(f'Use NC1Loss_v5_cosine, which uses n_k^0.5')
-        self.num_classes = num_classes
-        self.feat_dim = feat_dim
-        self.device = device
-        self.fixed_means = fixed_means
-        
-        if not fixed_means:
-            self.means = nn.Parameter(torch.randn(self.num_classes, self.feat_dim).to(self.device))
+            self.means = means
         else:
-            print('#####################Fixed means##################')
-            self.means = torch.randn(self.num_classes, self.feat_dim).to(self.device)
-        self.N = torch.tensor(occurrence_list).to(self.device)
+            self.means = nn.Parameter(means)
 
-    def forward(self, x, labels):
-        """
-        Args:
-            x: feature matrix with shape (batch_size, feat_dim).
-            labels: ground truth labels with shape (batch_size).
-        """
-        batch_size = x.size(0)
-        distmat = pairwise_cosine_distance(x, self.means)
-        
-        classes = torch.arange(self.num_classes).long()
-        classes = classes.to(self.device)
+        counts = torch.as_tensor(occurrence_list, dtype=torch.float32, device=device)
+        self.class_counts = counts
 
-        labels = labels.unsqueeze(1).expand(batch_size, self.num_classes)
+    def forward(self, features, labels):
+        batch_size = features.size(0)
+        distances = pairwise_cosine_distance(features, self.means)
 
-        mask = labels.eq(classes.expand(batch_size, self.num_classes)) # one-hot
-        mask2 = self.N.unsqueeze(0).expand(batch_size, self.num_classes) > 0
+        classes = torch.arange(self.num_classes, device=features.device).long()
+        label_mask = labels.unsqueeze(1).eq(classes.expand(batch_size, self.num_classes))
+        seen_class_mask = self.class_counts.unsqueeze(0) > 0
 
-        dist = distmat * mask.float() * mask2.float()
-        D = torch.sum(dist, dim=0)
-        N = self.N ** 0.5 + 1e-10 # torch.size(num_classes)
+        class_distances = distances * label_mask.float() * seen_class_mask.float()
+        distance_sum = torch.sum(class_distances, dim=0)
+        normalizer = self.class_counts.pow(self.count_power) + 1e-10
 
-        loss = (D/N).clamp(min=1e-12, max=1e+12).sum() / self.num_classes
+        loss = (distance_sum / normalizer).clamp(min=1e-12, max=1e+12).sum()
+        return loss / self.num_classes, self.means
 
-        return loss, self.means
 
-class NC2Loss(nn.Module):
-    '''
-    NC2 loss v0: maximize the average minimum angle of each centered class mean
-    '''
-    def __init__(self) -> None:
+class SqrtCountNormalizedCosineCompactnessLoss(CountNormalizedCosineCompactnessLoss):
+    """
+    NC1 compactness loss using cosine distance to class means, normalized by sqrt(n_k).
+    """
+    count_power = 0.5
+
+    def __init__(self, *args, **kwargs):
+        print('Use SqrtCountNormalizedCosineCompactnessLoss, which normalizes by sqrt(n_k).')
+        super().__init__(*args, **kwargs)
+
+
+class CenteredMeanAngleSeparationLoss(nn.Module):
+    """
+    NC2 separation loss: maximize each centered class mean's minimum angle to others.
+    """
+    def __init__(self):
         super().__init__()
-        
+
     def forward(self, means):
-        g_mean = means.mean(dim=0)
-        centered_mean = means - g_mean
-        means_ = F.normalize(centered_mean, p=2, dim=1)
-        cosine = torch.matmul(means_, means_.t())
-        # make sure that the diagnonal elements cannot be selected
+        global_mean = means.mean(dim=0)
+        centered_means = means - global_mean
+        normalized_means = F.normalize(centered_means, p=2, dim=1)
+        cosine = torch.matmul(normalized_means, normalized_means.t())
+
         cosine = cosine - 2. * torch.diag(torch.diag(cosine))
         max_cosine = cosine.max().clamp(-0.99999, 0.99999)
-        # maxmize the minimum angle
-        # dim=1 means the maximum angle of the other class to each class
-        loss = -torch.acos(cosine.max(dim=1)[0].clamp(-0.99999, 0.99999)).mean()
+        nearest_cosine = cosine.max(dim=1)[0].clamp(-0.99999, 0.99999)
+        loss = -torch.acos(nearest_cosine).mean()
 
         return loss, max_cosine
 
-class NCLoss(nn.Module):
-    def __init__(self, sup_criterion, lambda1, lambda2, lambda_CE=1.0, nc1='NC1Loss', nc2='NC2Loss', num_classes=1920, feat_dim=2000, device='cuda:0', occurrence_list=None, fixed_means=False, weight_factor=None):
+
+COMPACTNESS_LOSSES = {
+    'CountNormalizedCosineCompactnessLoss': CountNormalizedCosineCompactnessLoss,
+    'SqrtCountNormalizedCosineCompactnessLoss': SqrtCountNormalizedCosineCompactnessLoss,
+    # Backward-compatible config names; the old classes themselves were removed.
+    'NC1Loss_v2_cosine': CountNormalizedCosineCompactnessLoss,
+    'NC1Loss_v5_cosine': SqrtCountNormalizedCosineCompactnessLoss,
+}
+
+SEPARATION_LOSSES = {
+    'CenteredMeanAngleSeparationLoss': CenteredMeanAngleSeparationLoss,
+    # Backward-compatible config name; the old class itself was removed.
+    'NC2Loss': CenteredMeanAngleSeparationLoss,
+}
+
+
+def _build_loss(registry, name, *args, **kwargs):
+    try:
+        loss_cls = registry[name]
+    except KeyError as exc:
+        available = ', '.join(sorted(registry))
+        raise ValueError(f'Unknown loss "{name}". Available losses: {available}') from exc
+    return loss_cls(*args, **kwargs)
+
+
+def _build_supervised_loss(name):
+    try:
+        loss_cls = getattr(nn, name)
+    except AttributeError as exc:
+        raise ValueError(f'Unknown supervised loss "{name}" in torch.nn.') from exc
+    return loss_cls()
+
+
+class NeuralCollapseLoss(nn.Module):
+    def __init__(self, sup_criterion, lambda1, lambda2, lambda_CE=1.0,
+                 nc1='CountNormalizedCosineCompactnessLoss',
+                 nc2='CenteredMeanAngleSeparationLoss',
+                 num_classes=1920, feat_dim=2000, device='cuda:0',
+                 occurrence_list=None, fixed_means=False):
         super().__init__()
-        if weight_factor is None:
-            self.NC1 = globals()[nc1](num_classes, feat_dim, device, occurrence_list, fixed_means)
-        else:
-            self.NC1 = globals()[nc1](num_classes, feat_dim, device, occurrence_list, fixed_means, weight_factor)
-        self.NC2 = globals()[nc2]()
-        self.sup_criterion = globals()[sup_criterion]()
+        self.compactness_loss = _build_loss(
+            COMPACTNESS_LOSSES,
+            nc1,
+            num_classes,
+            feat_dim,
+            device,
+            occurrence_list,
+            fixed_means,
+        )
+        self.separation_loss = _build_loss(SEPARATION_LOSSES, nc2)
+        self.sup_criterion = _build_supervised_loss(sup_criterion)
         self.lambda1 = lambda1
         self.lambda2 = lambda2
         self.lambda_CE = lambda_CE
-        self.device = device
         self.num_classes = num_classes
         self.feat_dim = feat_dim
-    
+
+    @property
+    def means(self):
+        return self.compactness_loss.means
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        legacy_prefix = prefix + 'NC1.'
+        new_prefix = prefix + 'compactness_loss.'
+        for key in list(state_dict.keys()):
+            if key.startswith(legacy_prefix):
+                state_dict[new_prefix + key[len(legacy_prefix):]] = state_dict.pop(key)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
     def forward(self, y_pred, labels, features):
         sup_loss = self.sup_criterion(y_pred, labels)
+        compactness_loss, means = self.compactness_loss(features, labels)
+        separation_loss, max_cosine = self.separation_loss(means)
 
-        nc1_loss, means = self.NC1(features, labels)
-        nc2_loss, max_cosine = self.NC2(means)
-        
-        loss = self.lambda_CE * sup_loss + self.lambda1 * nc1_loss + self.lambda2 * nc2_loss
-        return loss, (sup_loss, nc1_loss, nc2_loss, max_cosine, means)
+        loss = (
+            self.lambda_CE * sup_loss
+            + self.lambda1 * compactness_loss
+            + self.lambda2 * separation_loss
+        )
+        return loss, (sup_loss, compactness_loss, separation_loss, max_cosine, means)
 
     def set_lambda(self, lambda1, lambda2):
         self.lambda1 = lambda1
         self.lambda2 = lambda2
         print(f'Set weights: lambda1={self.lambda1}, lambda2={self.lambda2}, lambda_CE={self.lambda_CE}')
-        
+
     def set_lambda_CE(self, lambda_CE):
         self.lambda_CE = lambda_CE
         print(f'Set weights: lambda1={self.lambda1}, lambda2={self.lambda2}, lambda_CE={self.lambda_CE}')
-        
+
     def freeze_means(self):
-        if self.NC1.fixed_means:
-            print('The means of NC1 are fixed, not need to freeze')
+        if self.compactness_loss.fixed_means:
+            print('The class means are fixed; no need to freeze them.')
             return
-        self.NC1.means.requires_grad = False
-        print('Freeze the means of NC1')
-    
+        self.compactness_loss.means.requires_grad = False
+        print('Freeze the class means.')
+
     def unfreeze_means(self):
-        if self.NC1.fixed_means:
-            print('The means of NC1 are fixed, not need to unfreeze')
+        if self.compactness_loss.fixed_means:
+            print('The class means are fixed; no need to unfreeze them.')
             return
-        self.NC1.means.requires_grad = True
-        print('Unfreeze the means of NC1')
-    
-if __name__ == '__main__':
-    device = 'cuda:0'
-    # criterion = NC1Loss_cosine_mlab(num_single_classes=5, num_multi_classes=2, feat_dim=8, multi_class_idx_list=[[0, 1], [2, 3]], device=device, occurrence_list=[1, 1, 1, 10, 1, 1, 1])
-    # print(criterion.means)
-    criterion = NC1Loss_v2_cosine(num_classes=5, feat_dim=8, device=device, occurrence_list=[1, 1, 1, 10, 1])
-    state_dict = criterion.state_dict()
-    criterion.load_state_dict(state_dict)
-    print(state_dict)
-    print(criterion.means)
-    print(criterion.parameters())
-    
+        self.compactness_loss.means.requires_grad = True
+        print('Unfreeze the class means.')

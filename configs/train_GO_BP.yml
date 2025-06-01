@@ -22,12 +22,12 @@ train:
   lr: 1.e-4
   weight_decay: 0.0
   patience: 20
-  loss: NCLoss
+  loss: NeuralCollapseLoss
   sup_criterion: CrossEntropyLoss
   lambda1: 1.0
   lambda2: 1.0
   lambda_CE: 0.0
   optimizer: Adam
   start_NC_epoch: 0
-  nc1: NC1Loss_v2_cosine
-  nc2: NC2Loss
+  nc1: CountNormalizedCosineCompactnessLoss
+  nc2: CenteredMeanAngleSeparationLoss

@@ -18,7 +18,7 @@ import numpy as np
 from datasets.sequence_dataset import MultiLabelSplitDataset
 from models.mlp import *
 from utils import commons
-from utils.losses import NCLoss, pairwise_cosine_distance
+from utils.losses import NeuralCollapseLoss
 
 torch.set_num_threads(4)
 
@@ -98,7 +98,8 @@ def train(model, train_loader, val_loader, criterion, optimizer, lr_scheduler, d
             best_val_loss = val_loss
             state_dict = model.state_dict()
             torch.save(state_dict, os.path.join(config.ckpt_dir, 'best_checkpoints.pt'))
-            torch.save(criterion.NC1.means.detach().cpu(), os.path.join(config.ckpt_dir, 'best_means.pt'))
+            if use_NC:
+                torch.save(criterion.means.detach().cpu(), os.path.join(config.ckpt_dir, 'best_means.pt'))
         all_val_loss.append(val_loss)
         losses = []
         if use_NC:
@@ -124,7 +125,8 @@ def train(model, train_loader, val_loader, criterion, optimizer, lr_scheduler, d
         lr_scheduler.step(mean_loss)
         state_dict = model.state_dict()
         torch.save(state_dict, os.path.join(config.ckpt_dir, 'last_checkpoints.pt'))
-        torch.save(criterion.NC1.means.detach().cpu(), os.path.join(config.ckpt_dir, 'last_means.pt'))
+        if use_NC:
+            torch.save(criterion.means.detach().cpu(), os.path.join(config.ckpt_dir, 'last_means.pt'))
         all_checkpoints = {'epoch': epoch, 'model': state_dict, 'optimizer': optimizer.state_dict(), 'criterion': criterion.state_dict(), 'lr_scheduler': lr_scheduler.state_dict(), 'n_bad': n_bad, 'best_val_loss': best_val_loss}
         torch.save(all_checkpoints, os.path.join(config.ckpt_dir, 'all_checkpoints.pt'))
         end_epoch = time.time()
@@ -141,7 +143,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, lr_scheduler, d
             writer.add_scalar('Train/nc2_loss', torch.tensor(nc2_losses).mean().item(), epoch)
             writer.add_scalar('Train/max_cosine', torch.tensor(max_cosines).mean().item(), epoch)
     if use_NC:
-        torch.save(criterion.NC1.means.detach().cpu(), os.path.join(config.ckpt_dir, 'means.pt'))
+        torch.save(criterion.means.detach().cpu(), os.path.join(config.ckpt_dir, 'means.pt'))
     return all_loss, all_val_loss
 
 class CustomSubset(Subset):
@@ -174,7 +176,6 @@ def get_args():
     parser.add_argument('--random_split_train_val', action='store_true')
     parser.add_argument('--nc_only', action='store_true')
     parser.add_argument('--fixed_means', action='store_true')
-    parser.add_argument('--weight_factor', type=float, default=None)
     parser.add_argument('--resume_model_dir', type=str, default=None)
     
     args = parser.parse_args()
@@ -202,7 +203,6 @@ def main():
     config.train.batch_size = args.batch_size if args.batch_size is not None or not hasattr(config.train, 'batch_size') else config.train.batch_size
     config.train.nc1 = args.nc1 if args.nc1 is not None or not hasattr(config.train, 'nc1') else config.train.nc1
     config.train.fixed_means = args.fixed_means if args.fixed_means or not hasattr(config.train, 'fixed_means') else config.train.fixed_means
-    config.train.weight_factor = args.weight_factor if args.weight_factor is not None or not hasattr(config.train, 'weight_factor') else config.train.weight_factor
 
     # Logging
     if args.resume_model_dir is not None:
@@ -273,9 +273,10 @@ def main():
     occurrence_list = [ec2occurrence[ec] for ec in label_list]
     
     # Train
-    if config.train.loss == 'NCLoss':
-        logger.info('Using NCLoss')
-        criterion = NCLoss(sup_criterion=config.train.sup_criterion, lambda1=config.train.lambda1, lambda2=config.train.lambda2, lambda_CE=config.train.lambda_CE, num_classes=config.model.out_dim, feat_dim=config.model.hidden_dims[-1], device=args.device, nc1=config.train.nc1, nc2=config.train.nc2, occurrence_list=occurrence_list, fixed_means=config.train.fixed_means, weight_factor=config.train.weight_factor)
+    use_NC = config.train.loss in {'NeuralCollapseLoss', 'NCLoss'}
+    if use_NC:
+        logger.info(f'Using {config.train.loss}')
+        criterion = NeuralCollapseLoss(sup_criterion=config.train.sup_criterion, lambda1=config.train.lambda1, lambda2=config.train.lambda2, lambda_CE=config.train.lambda_CE, num_classes=config.model.out_dim, feat_dim=config.model.hidden_dims[-1], device=args.device, nc1=config.train.nc1, nc2=config.train.nc2, occurrence_list=occurrence_list, fixed_means=config.train.fixed_means)
         optimizer = globals()[config.train.optimizer](list(model.parameters()) + list(criterion.parameters()) if not config.train.fixed_means else model.parameters(), lr=config.train.lr, weight_decay=config.train.weight_decay)
     else:
         criterion = globals()[config.train.loss]()
@@ -290,7 +291,7 @@ def main():
     
     commons.save_config(config, os.path.join(log_dir, 'config.yml'))
     
-    train(model=model, train_loader=train_loader, val_loader=val_loader, criterion=criterion, optimizer=optimizer, lr_scheduler=lr_scheduler, device=args.device, logger=logger, config=config.train, use_NC=(config.train.loss == 'NCLoss'), writer=writer, resume=args.resume_model_dir is not None, all_checkpoints=all_checkpoints if args.resume_model_dir is not None else None)
+    train(model=model, train_loader=train_loader, val_loader=val_loader, criterion=criterion, optimizer=optimizer, lr_scheduler=lr_scheduler, device=args.device, logger=logger, config=config.train, use_NC=use_NC, writer=writer, resume=args.resume_model_dir is not None, all_checkpoints=all_checkpoints if args.resume_model_dir is not None else None)
 
     end_overall = time.time()
     logger.info(f'Elapsed time: {commons.sec2hr_min_sec(end_overall - start_overall)}')
