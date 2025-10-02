@@ -16,7 +16,7 @@ import pandas as pd
 import numpy as np
 
 from datasets.sequence_dataset import MultiLabelSplitDataset
-from models.mlp import *
+from models import MLPModelLayernorm
 from utils import commons
 from utils.losses import NeuralCollapseLoss
 

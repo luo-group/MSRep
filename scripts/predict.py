@@ -10,7 +10,7 @@ from utils import commons
 from utils.losses import pairwise_cosine_distance
 import torch
 import numpy as np
-from models.mlp import *
+from models import MLPModelLayernorm
 from tqdm import tqdm
 import faiss
 from Bio import SeqIO
